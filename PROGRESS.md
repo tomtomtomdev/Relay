@@ -237,3 +237,53 @@ with no other memory.
   (handle partial UTF-8 across read chunks) before feeding the pipeline. Test with stubbed
   Telegram in/out (`StubURLProtocol`) + a real local PTY echo: send `/unlock` then a
   command, assert authorized output round-trips and an unauthorized chat is inert end-to-end.
+
+## Slice 6 — Wire-through (integration)   (2026-06-27)
+- Status: complete
+- What landed: `actor Bridge` composes the whole pipeline and the spine goes **LIVE**.
+  An ingest task long-polls `TelegramClient.getUpdates` (offset advanced only after a
+  batch is fully handled), runs each `Update` through `Authorizer.authorize` carrying
+  `SessionState` forward, and dispatches the `Decision`: `.drop` → nothing; `.reply`/
+  `.needsConfirm` → `sendMessage` of `MarkdownV2.escape(text)` (control replies are
+  escaped text, never a code block); `.forward` → `SessionManager.send` — **the only
+  path to the PTY**, wired only now that the spine's tests pass (guardrail). An output
+  task consumes `SessionManager.output`, decodes `Data`→`String` via a new
+  `UTF8StreamDecoder` that holds back a UTF-8 sequence split across read chunks, and
+  appends to a `DebounceBuffer`. A drain loop flushes on the idle `deadline` (or fill),
+  renders (strip → `OutputCap.capTail` at a 16k hard ceiling → chunk → `preBlock`), and
+  sends each `<pre>` chunk paced by `TokenBucket` (PTY output only; low-volume control
+  replies bypass the bucket). Output routes to `outputChatID`, learned from the
+  operator's first authorized message. `stop()` cancels the tasks and awaits their
+  completion so a stopped bridge leaves nothing polling. Errors in the loops are
+  swallowed, never logged (no token/secret can leak through an error).
+- Key files: `Relay/Bridge.swift` (new — `Bridge` actor + `UTF8StreamDecoder`);
+  `RelayTests/BridgeTests.swift`, `RelayTests/RoutingTelegramStub.swift` (new test infra:
+  a path-routing `URLProtocol` that queues `getUpdates` batches FIFO and captures
+  `sendMessage` chat-id+text). No `project.pbxproj` edit — `PBXFileSystemSynchronizedRootGroup`.
+- Tests: 85 unit passing (5 new + 80 prior) + UI launch tests; 0 failures. New: `/unlock`
+  then a command round-trips through a real `/bin/cat` PTY back to the operator chat as a
+  `<pre>` block and the pairing secret is never echoed; an un-allow-listed chat is inert
+  end-to-end (drop counted, zero sends, nothing reaches the PTY); an authorized-but-locked
+  command gets exactly the fixed `lockedReply`, MarkdownV2-escaped; `UTF8StreamDecoder`
+  reassembles a 3-byte char split across two chunks and a byte-at-a-time stream exactly.
+  All offline (routing stub) + real local PTY — no live Telegram calls.
+- Decisions / deviations from PLAN: introduced a `Bridge` orchestrator (the natural home
+  for the composition the PLAN describes) rather than wiring directly into the App. Kept
+  the Slice-5 reducers pure and added the impure timing here: a single drain loop that
+  computes its sleep from `debounce.deadline` / `bucket.nextAvailable(_:)` (capped at a
+  0.1s tick) realises "the OS idle timer fires off `DebounceBuffer.deadline`" without a
+  flaky `Timer`. `OutputCap` is applied only past the 16k hard cap (well above the 4k
+  chunk size) so normal output is never trimmed — render-path never drops. Control replies
+  are sent inline (not through the bucket); the bucket paces the high-volume PTY stream
+  only (SPEC §5 backpressure). `RoutingTelegramStub` holds empty `getUpdates` for ~50ms to
+  mimic a held long poll so the ingest loop doesn't spin against an instant-empty stub
+  (kept the Bridge free of test-only sleeps). `start()` is `async throws` (awaits the
+  `SessionManager` actor). `UTF8StreamDecoder` is `nonisolated` like the other transforms
+  so its methods carry no main-actor isolation under the repo's main-actor-by-default mode.
+- Commit: 8a1275d "slice 6: live wire-through …".
+- Next: Slice 7 — Menu-bar UI + settings. Watch out for: bind a settings form to
+  `BotConfig` + Keychain (secrets stay in `KeychainStore`, never `@AppStorage`/plist);
+  Start/Stop drives `Bridge.start()/stop()`; Lock/Unlock + status glyph reflect the
+  bridge's `SessionState`/`AppStatus`; "Send test message" + a live tail of the last N
+  output chunks. Keep the SwiftUI body thin and unit-test the view-model logic (status
+  transitions, validation) — the `Bridge` already owns the live state to surface.
