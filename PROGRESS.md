@@ -62,3 +62,38 @@ with no other memory.
   injected `URLSession`; tests must use a `URLProtocol` stub (zero live API calls);
   load the token from Keychain at call time and never log it; MarkdownV2 escaping of
   `_*[]()~`>#+-=|{}.!` and offset = last `update_id` + 1 only after handling.
+
+## Slice 2 — TelegramClient (no live network)   (2026-06-26)
+- Status: complete
+- What landed: `actor TelegramClient` over an injected `URLSession` (token injected at
+  init; default `baseURL` https://api.telegram.org). `getUpdates(offset:timeout:)` GET
+  long poll → decodes `[Update]`; `sendMessage(chatID:text:)` POST JSON body with
+  `parse_mode=MarkdownV2`. Telegram models (`Update`/`TelegramMessage`/`TelegramUser`/
+  `TelegramChat`/`TelegramResponse<Result>`) decode only the fields the bridge needs.
+  `Update.nextOffset(after:)` = max `update_id` + 1 (nil for empty batch).
+  `MarkdownV2.escape` backslash-escapes the 18 special chars. `TelegramError`
+  (httpStatus / invalidResponse / apiError) carries only status + Telegram description
+  — never the token.
+- Key files: `Relay/TelegramClient.swift`, `Relay/TelegramModels.swift`,
+  `Relay/MarkdownV2.swift` (all new); `RelayTests/TelegramClientTests.swift`,
+  `RelayTests/StubURLProtocol.swift` (new test infra).
+- Tests: 19 unit passing (8 new + 11 prior). New: getUpdates parse, ok:false→throws,
+  offset+timeout query shaping (GET, path `/bot<token>/getUpdates`), sendMessage body
+  (`chat_id`/`text`/`parse_mode`, POST `/sendMessage`), nextOffset math (full + empty),
+  MarkdownV2 escaping. All offline through `StubURLProtocol` — zero live API calls.
+- Decisions / deviations from PLAN: none functionally. Token is injected into the
+  client (Keychain→token wiring is the app's job, deferred to Slice 6/7) — the client
+  just never logs it. `StubURLProtocol` holds canned response as Sendable primitives
+  (Int status + Data body, `nonisolated(unsafe)` statics) and reads the POST body from
+  `httpBodyStream` (URLSession streams it); suite is `@Suite(.serialized)` to avoid
+  racing that static state under Swift Testing's parallel default. Gotcha hit: in a
+  single-`#` raw string `\#` is the escape introducer, so an expected literal for the
+  escaped `#` mis-parsed — rewrote the escaping test to assert the property directly.
+- Commit: 763d261 "slice 2: TelegramClient over injected URLSession".
+- Next: Slice 3 — Authorizer (the spine; heaviest tests in the repo). Watch out for:
+  pure `(Update, SessionState, Policy, clock) -> Decision`, no I/O; inject the clock for
+  idle/relock boundary tests; Gate 1 unauthorized → `.drop` silently (no reply, bump a
+  counter — no oracle); Gate 2 `/unlock <secret>` compares the Keychain secret in
+  constant time, idle/`/lock`/relaunch relock, wrong secret → one fixed reply; Gate 3
+  denylist refuse + flagged → `.needsConfirm` then `/confirm` → `.forward`; secret never
+  echoed. Reuse `BotConfig.pairingSecret`/`allowedIDs` and `Update` from Slices 1–2.
