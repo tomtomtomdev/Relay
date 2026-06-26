@@ -29,4 +29,20 @@ nonisolated enum MarkdownV2 {
         }
         return out
     }
+
+    /// Wrap `text` as a MarkdownV2 pre-formatted block (the `<pre>` equivalent) — how the
+    /// output pipeline (Slice 5) ships PTY output. Inside a code block only `` ` `` and
+    /// `\` are special, so escape *just those*; running the full `escape(_:)` here would
+    /// litter the rendered terminal text with stray backslashes.
+    static func preBlock(_ text: String) -> String {
+        var inner = ""
+        inner.reserveCapacity(text.count)
+        for character in text {
+            if character == "`" || character == "\\" {
+                inner.append("\\")
+            }
+            inner.append(character)
+        }
+        return "```\n" + inner + "\n```"
+    }
 }
