@@ -9,9 +9,14 @@ import SwiftUI
 
 @main
 struct RelayApp: App {
+    /// Drives the menu-bar glyph. Slice 0 ships the resting state; later slices
+    /// flip it as polling/unlock/error events arrive.
+    @State private var status: AppStatus = .stopped
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra("Relay", systemImage: status.systemImageName) {
+            RelayMenu(status: status)
         }
+        .menuBarExtraStyle(.menu)
     }
 }
