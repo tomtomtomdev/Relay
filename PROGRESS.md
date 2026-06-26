@@ -97,3 +97,51 @@ with no other memory.
   constant time, idle/`/lock`/relaunch relock, wrong secret → one fixed reply; Gate 3
   denylist refuse + flagged → `.needsConfirm` then `/confirm` → `.forward`; secret never
   echoed. Reuse `BotConfig.pairingSecret`/`allowedIDs` and `Update` from Slices 1–2.
+
+## Slice 3 — Authorizer (the spine)   (2026-06-26)
+- Status: complete
+- What landed: pure three-gate state machine. `Authorizer.authorize(update, state,
+  config, policy, now) -> AuthorizerOutcome` (`.decision` + next `.state`); no I/O, no
+  Keychain, no network — clock is the injected `now`. `Decision` = `.drop`/`.reply`/
+  `.forward`/`.needsConfirm` (SPEC §4). `SessionState` = `Lock` (`.locked` /
+  `.unlocked(until:)`) + `pendingConfirm` + `droppedCount`; `.initial` is locked
+  (relaunch relock). Gate 1: `from.id` AND `chat.id` must be allow-listed else silent
+  `.drop` + counter bump (no reply/oracle). Gate 2: `/unlock <secret>` constant-time
+  compares `config.pairingSecret` (empty secret never unlocks), sets idle deadline
+  `now + idleTimeout`; `/lock`, idle expiry (`now >= until`), and `.initial` relock;
+  wrong secret → one fixed `unlockFailed` reply (never echoes the attempt). Gate 3:
+  `Policy.screen` → `.denied` refuse / `.flagged` hold for `/confirm` then `.forward`
+  the held input / `.clean` forward; activity refreshes the idle deadline. Command
+  parser tolerates a `@botname` suffix and keeps the secret as the untouched remainder.
+- Key files: `Relay/Authorizer.swift` (new — Decision/SessionState/AuthorizerOutcome/
+  Authorizer + constant-time compare + private command parser), `Relay/Policy.swift`
+  (new — `PolicyVerdict`, `Policy` regex denylist/flagged, `.strict`/`.standard`
+  presets, `preset(_:)`); `RelayTests/AuthorizerTests.swift`,
+  `RelayTests/PolicyTests.swift` (new).
+- Tests: 45 unit passing (26 new + 19 prior). New Authorizer (19): identity drops
+  (bad sender / bad chat / no message) + counter, authorized-not-dropped, locked fixed
+  reply, correct-secret unlock + deadline, wrong/near-miss → identical fixed reply +
+  stays locked, empty-secret never unlocks, `/lock` relock+clear-pending, idle relock
+  boundary (just-before forwards / at-deadline relocks), activity refreshes deadline,
+  clean forward, denylist refuse, flagged→`/confirm`→forward held input, confirm-with-
+  nothing, confirm-while-locked, secret-never-echoed, constant-time exact-only. New
+  Policy (7): clean pass-through, catastrophic denied, risky flagged, denied>flagged
+  precedence, `/dev/null` benign (not denied), standard lenient vs strict, preset map.
+- Decisions / deviations from PLAN: signature returns `AuthorizerOutcome` (decision +
+  next state) rather than a bare `Decision` — keeps it a pure reducer so the state
+  machine evolves without hidden mutation (PLAN's "(…)->Decision" honored in spirit;
+  clock still injected, still I/O-free). Idle boundary defined as relocked when
+  `now >= until` (deadline inclusive). `Policy` stores regex *pattern strings* (compiled
+  per-match via `range(of:options:[.regularExpression,.caseInsensitive])`) so it stays
+  `Sendable`/`Equatable`; denylist patterns are deliberately narrow (raw-disk writes
+  match, `of=/dev/null` does not). `droppedCount` lives in `SessionState` (testable),
+  not an app-level metric. Authorizer is `nonisolated`/`Sendable`, no `@MainActor`.
+- Commit: b76fc26 "slice 3: Authorizer + Policy security spine".
+- Next: Slice 4 — PTY session (`actor SessionManager`). Watch out for: the spine is now
+  in place, so live message-input → PTY may be wired *after* Slice 4's tests pass (per
+  guardrail). Open PTY via `posix_openpt`+`grantpt`/`unlockpt` or `forkpty` (a tiny C
+  shim is allowed; not a third-party dep); spawn `zsh -l` first then the configured
+  `claude`; write authorized input to master + `\n`; dedicated read loop merging
+  stdout+stderr; detect child exit + respawn; assert no fd leak on teardown with a
+  local echo process. `SessionManager` is an `actor`; do not wire `Authorizer.forward`
+  into it live until Slice 6.
