@@ -186,3 +186,54 @@ with no other memory.
   tests); the only stateful bits are a ~300ms idle / 4000-char debounce flush and a
   send-rate token bucket. Nothing dropped silently — `…(truncated N lines)` marker only
   at the hard cap. Feed it the `Data` chunks `SessionManager.output` already emits.
+
+## Slice 5 — OutputPipeline   (2026-06-26)
+- Status: complete
+- What landed: the output transforms (SPEC §4/§5), all pure or value-type reducers with
+  an injected clock — no actor, no real timers. `ANSIStripper.strip` removes CSI/OSC/
+  charset/2-byte ESC sequences, collapses carriage returns (`\r\n`→`\n`; a lone `\r`
+  overwrites the current line so progress bars don't concatenate), and drops other C0
+  controls + DEL while keeping `\n`/`\t`. `OutputChunker.chunk(maxChars:4000)` breaks
+  text at line boundaries, hard-splits an overlong single line, and reconstructs the
+  input exactly (never drops; empty→[]). `OutputCap.capTail` is the last resort: over the
+  cap it drops the *oldest whole lines* and prepends a `…(truncated N lines)` marker,
+  keeping the recent tail — truncation is always announced. `MarkdownV2.preBlock` wraps a
+  chunk as a `<pre>` code block escaping only `` ` `` and `\` (not the full text set).
+  `DebounceBuffer` coalesces bursts (flush on ~0.3s idle via `deadline`, or immediately at
+  a 4000-char fill); `TokenBucket` paces sends to ~1 msg/s. `OutputPipeline.render` =
+  strip→chunk→wrap (stateless; never drops).
+- Key files: `Relay/OutputPipeline.swift` (new — ANSIStripper / OutputChunker / OutputCap
+  / DebounceBuffer / TokenBucket / OutputPipeline); `Relay/MarkdownV2.swift` (added
+  `preBlock`); `RelayTests/OutputPipelineTests.swift` (new). No `project.pbxproj` edit —
+  `PBXFileSystemSynchronizedRootGroup` auto-includes new files under `Relay/`/`RelayTests/`.
+- Tests: 80 unit passing (29 new + 51 prior) + UI launch tests. New: ANSI CSI/OSC(BEL+ST)/
+  charset stripping, CRLF + lone-CR line overwrite, control-drop keeping tab/newline,
+  plain pass-through; chunk single/empty/line-boundary/hard-split/oversized-reconstructs;
+  capTail under-cap unchanged + over-cap drops-oldest/keeps-tail/announces; preBlock fences
+  + escapes-only-`` ` ``-and-`\` + does-not-over-escape; debounce coalesce/deadline/fill/
+  flush; token-bucket full→limit→refill + nextAvailable; render compose/empty-or-pure-ANSI
+  →[]/oversized-wrapped-no-drop.
+- Decisions / deviations from PLAN: kept Slice 5 actor-free. SPEC calls OutputPipeline
+  "pure-ish" with "the debounce timer is the only stateful bit", so the debounce *logic*
+  is a pure `DebounceBuffer` reducer (clock injected, exposes `deadline`) and the actual
+  OS `Timer` + send-drain loop is deferred to Slice 6 wire-through — no flaky timer tests.
+  Truncation lives in a standalone `OutputCap.capTail` tested directly, NOT wired into
+  `render`; render never drops, so "nothing dropped silently" holds by construction and
+  the cap is the orchestrator's last-resort tool. Implemented carriage-return line-
+  overwrite (not mere CR-drop) so progress output is genuinely clean. `preBlock` added to
+  `MarkdownV2` (its header already anticipated it) rather than a new type. Chunk size is
+  measured in Characters (graphemes) like `MarkdownV2.escape`; 4000 leaves headroom under
+  Telegram's 4096 for the `<pre>` fences + in-block escaping. Swift Testing gotcha:
+  `#expect` captures its expression in an immutable autoclosure, so mutating reducer calls
+  (`append`/`tryConsume`/`flushIfIdle`) must run on their own line first, then assert the
+  stored result.
+- Commit: 0804ed5 "slice 5: OutputPipeline transforms + debounce/token-bucket reducers".
+- Next: Slice 6 — Wire-through (integration). Watch out for: this is where the security
+  spine goes LIVE — compose `TelegramClient(updates)`→`Authorizer`→`SessionManager`→
+  `OutputPipeline`→`TelegramClient(send)`, wiring `Authorizer.forward`→`SessionManager.send`
+  only after this slice's tests pass (guardrail). The OS idle timer fires off
+  `DebounceBuffer.deadline`; the send loop drains via `TokenBucket.tryConsume` and applies
+  `OutputCap.capTail` only at the hard cap. Decode `SessionManager.output` `Data`→`String`
+  (handle partial UTF-8 across read chunks) before feeding the pipeline. Test with stubbed
+  Telegram in/out (`StubURLProtocol`) + a real local PTY echo: send `/unlock` then a
+  command, assert authorized output round-trips and an unauthorized chat is inert end-to-end.
