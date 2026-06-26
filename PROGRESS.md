@@ -145,3 +145,44 @@ with no other memory.
   stdout+stderr; detect child exit + respawn; assert no fd leak on teardown with a
   local echo process. `SessionManager` is an `actor`; do not wire `Authorizer.forward`
   into it live until Slice 6.
+
+## Slice 4 — PTY session   (2026-06-26)
+- Status: complete
+- What landed: `actor SessionManager` owning one pseudo-terminal. PTY opened with
+  `posix_openpt(O_RDWR|O_NOCTTY)` + `grantpt`/`unlockpt`/`ptsname` (all available from
+  Darwin — **no C shim needed**); `Foundation.Process` runs the target on the slave fd
+  (one `FileHandle` wired to stdin/stdout/stderr so the tty merges them like a real
+  terminal). The parent keeps only the master fd. `start()` opens+launches; `send(_:)`
+  writes text + `\n` to the master (the "enter" key); `stop()` terminates the child.
+  A dedicated `Thread` read loop blocks on `read(master)` and yields `Data` chunks into
+  an `AsyncStream<Data>` (`output`); on EOF (child exit → slave closed → EIO/0) the loop
+  is the **sole closer** of the master fd, so there's no close-during-read race.
+  `RespawnPolicy` `.never` (default) finishes the stream on exit; `.always` relaunches.
+  Optional `bootstrap` line is typed in right after launch — realises "zsh -l first,
+  then the configured claude command". `waitUntilExited()` awaits permanent teardown via
+  parked `CheckedContinuation`s. `SessionError.openPTYFailed(code:)` carries only errno.
+- Key files: `Relay/SessionManager.swift` (new); `RelayTests/SessionManagerTests.swift`
+  (new). No `project.pbxproj` edit — `PBXFileSystemSynchronizedRootGroup` auto-includes
+  files dropped into `Relay/` and `RelayTests/`.
+- Tests: 51 unit passing (6 new + 45 prior) + UI launch tests. New (real short-lived
+  local procs on a PTY, no network): `/bin/echo` output streams back; `/bin/cat` input
+  round-trips (tty echo + cat); child-exit detected (`isRunning==false`); bootstrap line
+  runs after launch; `.always` respawns (`launchCount>=2` for `/bin/sleep 0.1`); teardown
+  leaks no fds (warm-up to absorb one-time Foundation/libdispatch fds, then 8× start/stop
+  loop, `after <= baseline + 2`). Suite `.serialized` (fd test reads a process-global
+  count). Test helpers race a `Task.sleep` timeout so a hung PTY can't stall the suite.
+- Decisions / deviations from PLAN: chose `Foundation.Process` + manually opened PTY
+  (the SPEC §4 alternative) over `forkpty`/C-shim — Darwin already exposes the posix_openpt
+  family, so zero extra surface. PLAN's "(zsh -l first, then the configured claude)" is
+  modelled as `command` (default `["/bin/zsh","-l"]`) + an optional `bootstrap` line, not
+  a two-step exec. Master fd is closed only by the read loop on EOF (single owner) — `stop()`
+  just `terminate()`s and lets EOF drive teardown, avoiding a cross-thread close race.
+  fd-leak assertion allows +2 slack for transient libdispatch fds; the 8× loop makes a
+  genuine per-iteration leak (≥8) stand out. No termination handler — Foundation's internal
+  proc dispatch source reaps the child. Authorizer is **not** wired in (per guardrail; Slice 6).
+- Commit: 8fdbbf1 "slice 4: PTY SessionManager actor over a pseudo-terminal".
+- Next: Slice 5 — OutputPipeline (pure). Watch out for: ANSI/control stripping + chunker
+  (≤4000, prefer line boundaries) + MarkdownV2 `<pre>` wrapper are pure functions (easy
+  tests); the only stateful bits are a ~300ms idle / 4000-char debounce flush and a
+  send-rate token bucket. Nothing dropped silently — `…(truncated N lines)` marker only
+  at the hard cap. Feed it the `Data` chunks `SessionManager.output` already emits.
