@@ -630,3 +630,72 @@ with no other memory.
   URL (no Google Drive fields). Core: a chip model, `maskToken`, reveal state. Watch out for:
   secrets stay in `KeychainStore` (Slice 1) and must never appear in a log / `@AppStorage` /
   the masked field's revealed state beyond the live in-memory value.
+
+## Slice 13 — Settings redesign (frames 3 & 4)   (2026-06-27)
+- Status: complete  ·  **fourth slice of the UI series (10–14)** — the redesigned, tabbed
+  Settings window, adapted to Hangar (the design's Google-Drive distribution → Hangar).
+- What landed: the *pure* presentation core + a thin tabbed SwiftUI body. Core
+  (`SettingsPresentation.swift`, all `nonisolated`/`Sendable`, no SwiftUI, no I/O):
+  `TokenMask.mask` masks a Telegram bot token preserving its visible structure
+  (`<botID>:AAH•••3kQ`) — keeps the non-secret bot ID + first/last 3 of the auth secret,
+  bullets the middle, and **never lets the hidden middle survive anywhere in the output**;
+  a value too short to reveal ends becomes all bullets. `TokenMask.fieldState(token:revealed:)
+  -> TokenFieldState` (`.editable` / `.masked(String)`) decides which control the token field
+  shows: editable when empty (so it can be entered) or when Reveal is on, otherwise the
+  read-only mask. `AllowedIDChips.add/remove` are the chip field's edit logic over `[Int64]`,
+  wrapping the Slice-7 `AllowedIDs.parse` — `add` appends valid, not-already-present IDs
+  (single or comma-separated batch) preserving order, dropping invalid/blank/duplicate
+  (idempotent); `remove` filters one out. `PolicyPreset` gained `displayName`/`summary` for
+  the segmented permission control over the **real** presets (strict/standard) — the design's
+  Ask/Auto/Plan modes are deliberately **not** invented (backlog: needs an Authorizer/`Policy`
+  change). `SettingsTab` enumerates the four tabs (Telegram / Claude / Distribution / General)
+  in order. View (`SettingsView.swift`, fully rewritten, 540×460, both appearances): a styled
+  toolbar tab row (active tab amber-tinted), then per tab — **Telegram**: masked token +
+  Reveal/Hide (SecureField↔TextField↔masked Text on the same in-memory `settings.token`),
+  the allowed-ID chip field (blue chips with × remove + add-on-Enter via a `FlowLayout`),
+  pairing secret; **Claude**: target command + the `PolicyPreset` segmented control with a
+  live summary + an info callout noting the Ask/Auto/Plan backlog; **Distribution**: an amber
+  Hangar "dev/CI action" callout (no Google Drive fields) + the last install URL with Copy /
+  Send-to-Chat (reusing `sendInstallLink()`); **General**: idle timeout. A shared footer shows
+  the first `validationIssues()` (or "Ready to start") + Save (⌘S → `saveSettings()`).
+- Key files: `Relay/SettingsPresentation.swift` (new — `TokenMask`/`TokenFieldState`/
+  `AllowedIDChips`/`PolicyPreset` display/`SettingsTab`), `Relay/SettingsView.swift`
+  (rewritten — tabbed body + `FieldBox`/`FlowLayout`). Tests:
+  `RelayTests/SettingsPresentationTests.swift` (new). No `project.pbxproj` edit —
+  `PBXFileSystemSynchronizedRootGroup` auto-includes new files under `Relay/`/`RelayTests/`.
+- Tests: 219 Swift Testing cases passing (22 new + 197 prior) + 4 UI launch tests; 0
+  failures; build clean (no warnings, Swift 6 strict concurrency). New, all pure
+  (Foundation-only): mask keeps botID + ends / no-colon whole-value / too-short → all bullets
+  / short-secret → bullets-keep-botID / empty → "" / **hidden middle never present in output**
+  / custom visible counts; fieldState empty→editable / set→masked / revealed→editable; chip
+  add valid / dedup-noop / reject-invalid+blank / negative group IDs / comma batch
+  order+dedup; chip remove existing / missing-noop; preset displayName + distinct non-empty
+  summaries + **only strict/standard exist** (no invented modes); tabs in design order + every
+  tab has an icon.
+- Decisions / deviations from PLAN: the token field uses a 3-way control —
+  read-only **custom mask** (the design's `7847…3kQ`) when collapsed-with-a-value, swapping to
+  an editable SecureField (collapsed-empty) / TextField (revealed) — which both honours the
+  design's structure-preserving mask *and* PLAN's "SecureField/TextField swap on the same
+  in-memory `settings.token`". The revealed value is only ever the live in-memory token; the
+  mask provably can't leak the secret middle (pinned by `maskNeverContainsTheHiddenMiddle…`),
+  and `BotConfig`'s Codable surface already excludes secrets (Slice 1), so nothing reaches
+  UserDefaults/`@AppStorage` — the guardrail holds by construction. Tab names follow the design
+  + PROGRESS ("Claude", not the plan-outline's "Session"). Permission mode is the **real**
+  `PolicyPreset` only; the design's Ask/Auto/Plan is surfaced as an honest backlog callout, not
+  faked. Distribution tab is Hangar-only (dev/CI callout + install link) — no Google email/
+  app-password fields (publishing stays dev/CI; no publisher token in the tester binary, Slice
+  9). The "Forward output" toggle and "Working directory" picker from the design have no backend
+  field (output forwarding is always-on in `Bridge`; we store a target *command*, not a dir),
+  so they were adapted away rather than invented. Save stays explicit (a shared footer button)
+  rather than auto-save, matching Slice 7. Pure core kept Foundation-only/`nonisolated`; the
+  SwiftUI body is untested-by-design (repo pattern) with dark/light `#Preview`s seeded via
+  `AppModel.previewSeeded`. A minimal `FlowLayout: Layout` (macOS 13+) wraps the chips. Did NOT
+  touch the unrelated `design_handoff_relay/` worktree deletions.
+- Commit: a310072 "slice 13: settings redesign (frames 3 & 4) — tabbed, chip IDs, masked token".
+- Next: Slice 14 — Archive & Distribute sheet (frame 5), the **final** UI-series slice. Core:
+  `ArchiveJobViewState.derive(isArchiving:isPublishing:lastArtifactURL:lastInstallURL:
+  lastError:) -> (steps:[Step], primaryTitle, shareURL?)` mapping the existing `AppModel` flags
+  to a step list (Build → Archive → Upload → Share link) with status circles + a stateful
+  primary button ("Archive & Upload" / "Archiving…" / "Open Install Link"). View = a sheet/
+  window with step rows + share-link field + Copy. Watch out: fine-grained per-step % needs new
+  backend signals → backlog; start with **coarse** states from the current flags only.
