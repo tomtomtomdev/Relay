@@ -473,3 +473,41 @@ with no other memory.
   notification mirror) and are out of the original scope. To actually publish from a dev
   build, inject a configured `HangarClient(baseURL:token:session:)` into `AppModel`
   (token from `KeychainStore`) — the seam is in place.
+
+## Slice 10 — Design foundation (tokens + components)   (2026-06-27)
+- Status: complete  ·  **first slice of a new UI series (10–14)** that implements the
+  `design_handoff_relay` design (functional backend was 0–9; the UI was a placeholder).
+- What landed: the *pure* core of the design system + the SwiftUI bridge/components.
+  `RGBA(hex:)` parses `#RRGGBB`/`RRGGBB`/`#RRGGBBAA` (nil on malformed). `PaletteToken`
+  (semantic roles: surfaces/text/border/brand+status) resolves per `Appearance` via
+  `RelayPalette.resolve(_:_:)` — two hex tables transcribed from the handoff "Design
+  Tokens"; the terminal stays `#161618` in **both** appearances; brand/status accents are
+  appearance-independent. `DotState` (connected/allowed/ready/warn/error/idle) → token.
+  SwiftUI layer: `Color(_ token:, _ scheme:)` bridge (maps `ColorScheme`→`Appearance`),
+  `RelayFont`/`RelayRadius`/`RelayMetric` constants, and reusable views `StatusDot`,
+  `StatusCard`, `RelayToggleStyle`, `Pill`, `.terminalText()` + dark/light `#Preview`s.
+  App accent colour set to Relay amber `#F0883E`.
+- Key files: `Relay/RelayTheme.swift` (new — Foundation-only core: `RGBA`, `Appearance`,
+  `PaletteToken`, `RelayPalette`, `DotState`), `Relay/DesignComponents.swift` (new —
+  SwiftUI bridge + components + previews), `Relay/Assets.xcassets/AccentColor.colorset/
+  Contents.json` (amber). Tests: `RelayTests/RelayThemeTests.swift` (new). No
+  `project.pbxproj` edit — `PBXFileSystemSynchronizedRootGroup` auto-includes new files.
+- Tests: 12 new Swift Testing cases (hex parsing incl. malformed/8-digit; dark/light
+  resolution incl. window-bg inversion, terminal-stays-dark, primary-text invert,
+  accent appearance-independence, every-token-resolves; dot→token mapping) + full prior
+  suite green; build clean (no warnings, Swift 6 strict concurrency).
+- Decisions / deviations from PLAN: **this slice is not in the original PLAN** — it opens
+  the approved UI design series (Slices 10–14; see the "UI design series" section appended
+  to PLAN.md). Core kept Foundation-only with its own `Appearance` enum (not SwiftUI's
+  `ColorScheme`) so it's testable without SwiftUI and stays `nonisolated`/`Sendable` like
+  `AppStatus`; SwiftUI types live only in `DesignComponents.swift`. Borders modelled as
+  white/black with low alpha (design specifies `rgba(255,255,255,.06–.12)` /
+  `rgba(0,0,0,.07–.1)`). No window/popover/settings restyle yet — those are Slices 11–14.
+  Did NOT touch the unrelated `design_handoff_relay/` worktree deletions (reference copy
+  kept in `~/Downloads/design_handoff_relay/`).
+- Commit: see `git log --grep "slice 10:"` "slice 10: design foundation (tokens + components)".
+- Next: Slice 11 — Main window (frame 1): add a `Window("Relay — Session")` scene (204px
+  sidebar + 3 `StatusCard`s + live terminal panel). Build its testable core first
+  (`SessionStatus.derive` for the cards, `MaskedID.format` → `7129•••842`,
+  `SessionLogLine.classify` for coloured output). Watch out for: `LSUIElement`/accessory
+  apps need `NSApp.activate(ignoringOtherApps:)` to front the window on "Open Relay".

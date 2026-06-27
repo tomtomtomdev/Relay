@@ -99,6 +99,43 @@ and defers distribution to the end so it never blocks core work.
 
 ---
 
+## UI design series (Slices 10–14)
+
+Implements the `design_handoff_relay` high-fidelity design over the finished backend.
+Same loop as above; each slice pairs a **pure, `Sendable`, unit-tested presentation
+core** (like `AppStatus.derive`) with a thin SwiftUI body + `#Preview`. Full plan:
+`~/.claude/plans/iterative-growing-treasure.md`. Confirmed decisions: distribution UI
+reflects **Hangar** (not the design's Google Drive); both appearances supported; no new
+deps; no secret ever logged/echoed.
+
+### Slice 10 — Design foundation ✅ (done)
+- `RelayTheme` (RGBA/hex, `PaletteToken`, `RelayPalette.resolve` dark+light, `DotState`)
+  + SwiftUI bridge & reusable components (`StatusDot`/`StatusCard`/toggle/pill/terminal).
+
+### Slice 11 — Main window (frame 1)
+- `Window("Relay — Session")` scene: 204px sidebar (nav + app mark + bot-listener toggle),
+  three status cards, live terminal panel. Core: `SessionStatus.derive` (the cards),
+  `MaskedID.format` (`7129•••842`), `SessionLogLine.classify` (coloured feed).
+- Watch: `LSUIElement`/accessory apps need `NSApp.activate(_:)` to front the window.
+
+### Slice 12 — Status-bar popover (frame 2)
+- Switch to `.menuBarExtraStyle(.window)`; styled header/status/Recent/footer; preserve
+  every current `RelayMenu` action. Core: `RecentCommand` derivation; reuse `SessionStatus`.
+
+### Slice 13 — Settings redesign (frames 3 & 4, adapted to Hangar)
+- Tabbed settings; chip ID input, masked-token + Reveal (never logged), segmented
+  permission mode over the real `PolicyPreset`. Distribution tab = Hangar dev/CI callout +
+  install URL (no Google Drive fields). Core: chip model, `maskToken`, reveal state.
+- Note: design's 3 permission modes (Ask/Auto/Plan) ≠ backend's `strict`/`standard` →
+  backlog (needs an Authorizer/`Policy` change); don't invent unsupported modes.
+
+### Slice 14 — Archive & Distribute sheet (frame 5)
+- Step list + progress from existing `AppModel` flags. Core: `ArchiveJobViewState.derive`
+  (steps + stateful primary button + share URL). Fine-grained % needs new backend signals
+  → backlog; start coarse.
+
+---
+
 ## Backlog / later
 - Multiple named PTY sessions, switchable by `/session <name>`.
 - Inline keyboard buttons for `/confirm`, `/lock`, common commands.
