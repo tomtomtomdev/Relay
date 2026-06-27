@@ -511,3 +511,63 @@ with no other memory.
   (`SessionStatus.derive` for the cards, `MaskedID.format` → `7129•••842`,
   `SessionLogLine.classify` for coloured output). Watch out for: `LSUIElement`/accessory
   apps need `NSApp.activate(ignoringOtherApps:)` to front the window on "Open Relay".
+
+## Slice 11 — Main window (frame 1)   (2026-06-27)
+- Status: complete  ·  **second slice of the UI series (10–14)** — the design's headline
+  "Live Session" window, built on the Slice-10 token/component foundation.
+- What landed: the *pure* presentation core + a thin SwiftUI `Window`. Core
+  (`SessionPresentation.swift`, all `nonisolated`/`Sendable`, no SwiftUI, no I/O):
+  `SessionStatus.derive(isRunning:isUnlocked:hasError:settings:) -> [StatusCardModel]`
+  produces the three status cards (Telegram Bot / Source Chat / Claude Code) from the
+  `AppModel` flags + `BotConfig` — **never surfaces the token** (bot card shows
+  Connected/Stopped/Error + a non-secret detail like "Polling for updates"/"No token set";
+  source-chat card masks the first allowed ID + "+N more"; claude card shows Ready/Locked/
+  Stopped + the target command). `MaskedID.format` masks a chat ID for display
+  (`7129904842` ⇒ `7129•••842`): keep first 4 + last 3 digits, proportional bullets for the
+  middle, sign-preserving for negative group IDs, short IDs returned unmasked.
+  `SessionLogLine.classify(_:) -> Kind` (`input`/`stdout`/`pass`/`warn`/`reply`) is a
+  heuristic colouring of real PTY lines (reply `↳` wins over a trailing `✓`; `⚠`/error/
+  warning/fail/denied/permission → warn; only the uppercase `PASS` marker or `✓`/`✔` →
+  pass, so the word "passed" in a summary stays plain stdout; `$ …` or `"…"` → input);
+  each `Kind` maps to a `PaletteToken`. View (`SessionWindow.swift`): 204px sidebar (steel
+  `RelayAppMark` + wordmark, nav rows with the active "Session" amber-tinted, `SettingsLink`
+  for Settings, Activity/Archive are inert placeholders for later slices, a bottom
+  bot-listener `RelayToggleStyle` bound to `start()`/`stop()`), three `StatusCard`s, and a
+  `#161618` terminal panel rendering `model.tail.lines` coloured by `classify` + a blinking
+  amber caret. Title-bar trailing toolbar item shows Listening/Paused.
+- Key files: `Relay/SessionPresentation.swift`, `Relay/SessionWindow.swift` (new); edits to
+  `Relay/RelayApp.swift` (added the `Window("Relay — Session", id: SessionWindow.sceneID)`
+  scene), `Relay/RelayMenu.swift` (added "Open Relay"), `Relay/DesignComponents.swift`
+  (added `Color(_ rgba: RGBA)` for off-palette one-offs). Tests:
+  `RelayTests/SessionPresentationTests.swift` (new). No `project.pbxproj` edit —
+  `PBXFileSystemSynchronizedRootGroup` auto-includes new files under `Relay/`/`RelayTests/`.
+- Tests: 184 Swift Testing cases passing (18 new + 166 prior) + 4 UI launch tests; 0
+  failures; build clean (no warnings, Swift 6 strict concurrency). New: MaskedID canonical/
+  short/boundary/proportional-bullets/negative; classify of the design terminal lines +
+  reply-over-✓ + error/FAIL→warn + plain/summary/empty→stdout + every Kind→token; derive
+  three cards in order, running-unlocked all-healthy (Connected/Allowed/Ready + masked ID +
+  command detail), stopped→gray, error→bot card, locked-running→Claude `.warn` "Locked",
+  missing-token/no-allowed-chats/missing-command call-outs, multi-ID "+N more".
+- Decisions / deviations from PLAN: the PLAN flagged `NSApp.activate(ignoringOtherApps:)`,
+  but that overload is **deprecated at our macOS 15.6 deployment target** (would be a
+  warning = failure), so "Open Relay" uses the non-deprecated `NSApp.activate()` (macOS
+  14+). Window stays menu-bar-resident via `.defaultLaunchBehavior(.suppressed)` (macOS 15+)
+  so it doesn't auto-open at launch. Design details we **can't honestly source were adapted,
+  not faked**: no bot username (`@relay_dev_bot`) — we only hold the token, never shown — so
+  the bot card detail is a connection-state string; no chat display name ("Dewa") — the
+  source-chat detail is just the masked ID; the Claude card detail is the `targetCommand`
+  (we store a command, not a working dir). Sidebar nav Activity/Archive are inert
+  placeholders (their destinations are Slices 12/14); only the active Session row + the
+  `SettingsLink` are live this slice. Pure core kept Foundation-only/`nonisolated`; the
+  SwiftUI body is untested-by-design (repo pattern: test the derivation, keep the view
+  thin) with dark/light `#Preview`s seeded via `AppModel.previewSeeded`. Did NOT touch the
+  unrelated `design_handoff_relay/` worktree deletions.
+- Commit: ad46916 "slice 11: main window (frame 1) — sidebar + status cards + live terminal".
+- Next: Slice 12 — Status-bar popover (frame 2): switch `RelayApp` to
+  `.menuBarExtraStyle(.window)` and replace the plain `RelayMenu` with the styled popover
+  (header + master toggle, status rows reusing `SessionStatus.derive`, a **Recent** list,
+  footer Open Relay / Pause / Quit) — **preserving every current `RelayMenu` action**
+  (Start/Stop, Lock/Unlock, Send Test Message, Build & Archive/Publish, Copy/Send install
+  link, Open Relay, Settings, Quit). Core: a `RecentCommand` derivation (status icon + mono
+  command + time) from the tail/log. Watch out for: `.window` style changes dismissal
+  behaviour (popover stays open across actions) and the live tail/Recent must stay bounded.
