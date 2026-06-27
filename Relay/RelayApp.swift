@@ -15,9 +15,9 @@ struct RelayApp: App {
 
     var body: some Scene {
         MenuBarExtra("Relay", systemImage: model.status.systemImageName) {
-            RelayMenu(model: model)
+            StatusPopover(model: model)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)   // Slice 12: the styled popover (design frame 2)
 
         // The main window (Slice 11, design frame 1). Suppressed at launch so the app stays
         // menu-bar resident; opened on demand via the menu's "Open Relay".
