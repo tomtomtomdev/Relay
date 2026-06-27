@@ -407,3 +407,69 @@ with no other memory.
   multipart two-part body, presigned create→PUT(replay uploadHeaders)→finalize, and the
   401/403/409/413/415/422 → `HangarError` mapping. Reuse this slice's `Archiver` to produce
   the artifact, then publish; surface the returned `installURL`.
+
+## Slice 9 — Publish to Hangar   (2026-06-27)
+- Status: complete  ·  **final planned slice — the build pipeline now goes archive → publish.**
+- What landed: the distribution layer (PLAN Slice 9, SPEC §6). `actor HangarClient:
+  DistributionService` publishes a built artifact over an injected `URLSession` (no SDK).
+  It picks the upload shape by artifact size vs an injected `multipartThreshold`:
+  `< threshold` → **direct multipart** (one `POST /api/v1/releases`, two parts: `metadata`
+  JSON + `artifact` octet-stream); `≥ threshold` → **presigned** (`POST …/releases` with
+  JSON metadata + `sizeBytes` + `checksumSha256` → ticket `{releaseId, uploadUrl,
+  uploadMethod, uploadHeaders, expiresIn}` → `PUT uploadUrl` replaying `uploadHeaders` →
+  `POST …/releases/{id}/finalize` with `{checksumSha256}`). The API token is injected and
+  sent only as `Authorization: Bearer <token>` at call time — never logged, and **never**
+  attached to the third-party presigned-storage `PUT`. Hangar non-2xx + `{error:{code}}`
+  bodies map to `HangarError` (401→invalidToken, 403→insufficientScope, 404→notFound,
+  409→checksumMismatch|notFinalized by `code`, 413→tooLarge, 415→unsupportedArtifact,
+  422→validation, else server/transport; unreadable artifact → `.artifactUnreadable`
+  before any request). `ReleaseMetadata`/`PublishResult` mirror Hangar JSON field-for-field
+  via `CodingKeys` (`bundleID`↔`bundleId`, `releaseID`↔`releaseId`, ISO-8601 `createdAt`);
+  `ReleaseMetadata.from(infoDictionary:platform:channel:gitCommit:)` builds from a bundle's
+  Info.plist. `ArtifactDigest.sha256Hex` is a **pure-Swift SHA-256** (stdlib only) for the
+  artifact checksum. Wire-through: `AppModel.buildAndPublish()` archives (Slice 8) then
+  publishes via an injected `DistributionService?`, surfacing `lastInstallURL`; a thin
+  `RelayMenu` "Build & Publish…" item shows the install link with Copy + "Send to Chat"
+  (`sendInstallLink()`, mirrors `sendTestMessage`).
+- Key files: `Relay/DistributionService.swift` (new — protocol, `Platform`,
+  `ReleaseMetadata` + factory, `PublishResult`, `HangarError`, `ArtifactDigest`),
+  `Relay/HangarClient.swift` (new — the actor + private wire bodies); edits to
+  `Relay/AppModel.swift` (publish events/state, `buildAndPublish`, `sendInstallLink`,
+  `liveMetadata`/`gitCommit`) and `Relay/RelayMenu.swift` (menu item). Tests:
+  `RelayTests/HangarStub.swift` + `RelayTests/HangarClientTests.swift` +
+  `RelayTests/ReleaseMetadataTests.swift` (new), edits to `RelayTests/AppModelTests.swift`.
+  No `project.pbxproj` edit — `PBXFileSystemSynchronizedRootGroup` auto-includes the new files.
+- Tests: 154 Swift Testing cases passing (21 new + 133 prior) + 4 UI launch tests; 0
+  failures; build clean (no warnings). New, all offline through `HangarStub` (a routing/
+  FIFO `URLProtocol` that captures every request) + a real local artifact file — **no live
+  upload**: multipart sends two parts + `Bearer` + Hangar-keyed metadata, 201 decodes to
+  `PublishResult`; presigned does create→PUT→finalize (PUT body == file bytes, replays
+  `uploadHeaders`, carries **no** `Authorization`; create sends `sizeBytes`+`checksumSha256`;
+  finalize hits `…/{id}/finalize`); threshold boundary stays multipart; the 9 status→error
+  mappings; missing artifact → `.artifactUnreadable` with zero requests; a thrown error
+  never echoes the token; SHA-256 matches NIST vectors (`abc`, empty, 1000×`a`); metadata
+  factory maps/omits keys and encodes Hangar JSON keys; `buildAndPublish` surfaces the
+  install URL / a bounded failure / refuses with no publisher configured.
+- Decisions / deviations from PLAN: **publishing is wired through a `DistributionService?`
+  that is `nil` by default**, so the shipped/tester binary carries no publisher and "Build
+  & Publish" reports "isn't configured" — this satisfies SPEC §6's "publisher token never
+  shipped in the tester binary" *by construction*; a live `HangarClient` (base URL + a
+  Keychain `Bearer` token) is a dev-build/CI injection, and no Hangar token field was added
+  to the tester UI on purpose. **SHA-256 is hand-rolled in pure Swift rather than CryptoKit/
+  CommonCrypto** — the guardrail enumerates stdlib/Foundation/AppKit/SwiftUI/Security only,
+  and the digest here is an upload-integrity checksum (not a security primitive), so stdlib
+  keeps the zero-extra-framework rule pristine; verified against known NIST vectors. Token
+  injected at init like `TelegramClient` ("Bearer at call time" = only ever in the header,
+  never logged). Presigned "create" flattens the metadata to the top level + `sizeBytes`/
+  `checksumSha256` (custom `encode(to:)` merges the keyed containers) — the natural reading
+  of SPEC's "JSON metadata + sizeBytes + checksumSha256". `JSONEncoder`/`JSONDecoder` are
+  built per-use (not shared statics) because they aren't `Sendable` under Swift 6 (would be
+  a warning = failure). All new non-UI types are `nonisolated`/`Sendable` (app target is
+  main-actor-by-default; matches the repo's transforms-are-Sendable guardrail). Did NOT
+  touch the unrelated `design_handoff_relay/` deletions in the worktree.
+- Commit: aa49482 "slice 9: HangarClient distribution + Build & Publish wire-through".
+- Next: **PLAN complete** — Slices 0–9 all landed. No Slice 10. Remaining items live in
+  PLAN's "Backlog / later" (named PTY sessions, inline keyboard buttons, file send,
+  notification mirror) and are out of the original scope. To actually publish from a dev
+  build, inject a configured `HangarClient(baseURL:token:session:)` into `AppModel`
+  (token from `KeychainStore`) — the seam is in place.

@@ -25,6 +25,8 @@ nonisolated enum AppEvent: Sendable {
     case clearError
     case archiveStarted
     case archiveFinished(URL)
+    case publishStarted
+    case publishFinished(URL)
 }
 
 @Observable
@@ -43,18 +45,28 @@ final class AppModel {
     private(set) var isArchiving = false
     private(set) var lastArtifactURL: URL?
 
+    /// Build & Publish (Slice 9): in-flight flag and the last minted install URL.
+    private(set) var isPublishing = false
+    private(set) var lastInstallURL: URL?
+
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private let archiver: ArchiveRunning
+    @ObservationIgnored private let distributor: DistributionService?
+    @ObservationIgnored private let metadataProvider: @Sendable () async -> ReleaseMetadata
     @ObservationIgnored private var bridge: Bridge?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
 
     init(
         store: SettingsStore,
         tailCapacity: Int = 50,
-        archiver: ArchiveRunning = Archiver(scriptURL: Archiver.defaultScriptURL)
+        archiver: ArchiveRunning = Archiver(scriptURL: Archiver.defaultScriptURL),
+        distributor: DistributionService? = nil,
+        metadataProvider: @escaping @Sendable () async -> ReleaseMetadata = { await AppModel.liveMetadata() }
     ) {
         self.store = store
         self.archiver = archiver
+        self.distributor = distributor
+        self.metadataProvider = metadataProvider
         self.settings = store.load()
         self.tail = OutputTail(capacity: tailCapacity)
     }
@@ -83,6 +95,7 @@ final class AppModel {
         case .failed(let message):
             lastError = message
             isArchiving = false
+            isPublishing = false
         case .clearError:
             lastError = nil
         case .archiveStarted:
@@ -90,6 +103,11 @@ final class AppModel {
         case .archiveFinished(let artifact):
             isArchiving = false
             lastArtifactURL = artifact
+        case .publishStarted:
+            isPublishing = true
+        case .publishFinished(let installURL):
+            isPublishing = false
+            lastInstallURL = installURL
         }
     }
 
@@ -177,6 +195,42 @@ final class AppModel {
         }
     }
 
+    // MARK: - Build & Publish (Slice 9)
+
+    /// Run the archive pipeline, then publish the artifact to Hangar and surface the minted
+    /// install URL (SPEC §6). Publishing is a dev/CI action: the publisher token is never
+    /// shipped in the tester binary, so a build with no `distributor` configured refuses.
+    func buildAndPublish() async {
+        guard let distributor else {
+            apply(.failed("Publishing isn't configured on this build."))
+            return
+        }
+        guard !isPublishing, !isArchiving else { return }
+        apply(.clearError)
+        apply(.publishStarted)
+        do {
+            let outcome = try await archiver.archive(dryRun: false)
+            let metadata = await metadataProvider()
+            let result = try await distributor.publish(artifact: outcome.artifact, metadata: metadata)
+            apply(.publishFinished(result.installURL))
+        } catch {
+            apply(.failed("Publish failed."))   // never includes the token or tool output
+        }
+    }
+
+    /// Offer the last install URL to the operator chat (mirrors `sendTestMessage`).
+    func sendInstallLink() async {
+        guard let url = lastInstallURL else { return }
+        let text = "📦 Install: \(url.absoluteString)"
+        if let bridge {
+            await bridge.sendTestMessage(text)   // Bridge escapes MarkdownV2 internally
+            return
+        }
+        guard !settings.token.isEmpty, let chatID = settings.allowedIDs.first else { return }
+        let client = TelegramClient(token: settings.token, session: Self.makeURLSession())
+        try? await client.sendMessage(chatID: chatID, text: MarkdownV2.escape(text))
+    }
+
     // MARK: - Internals
 
     private func consumeEvents(from bridge: Bridge) {
@@ -197,5 +251,24 @@ final class AppModel {
         config.timeoutIntervalForRequest = 60   // comfortably longer than the 30s long poll
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
+    }
+
+    /// The default release metadata: this build's Info.plist (bundle id / version / build /
+    /// minOS) for macOS, tagged with the current git commit (best-effort). Only invoked
+    /// when a publisher is configured — tests inject a fixed provider.
+    static func liveMetadata() async -> ReleaseMetadata {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return ReleaseMetadata.from(
+            infoDictionary: info, platform: .macos, channel: "internal", gitCommit: await gitCommit()
+        )
+    }
+
+    private static func gitCommit() async -> String? {
+        let result = try? await ProcessCommandRunner().run(
+            executable: "/usr/bin/git", arguments: ["rev-parse", "--short", "HEAD"], currentDirectory: nil
+        )
+        guard let result, result.exitCode == 0 else { return nil }
+        let commit = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return commit.isEmpty ? nil : commit
     }
 }

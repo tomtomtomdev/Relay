@@ -22,16 +22,37 @@ struct AppModelTests {
         func archive(dryRun: Bool) async throws -> ArchiveOutcome { try result.get() }
     }
 
+    /// Replays a canned publish result so the "Build & Publish" wire-through is testable
+    /// with no live upload (the HangarClient itself is covered by HangarClientTests).
+    private struct StubDistributor: DistributionService {
+        let result: Result<PublishResult, HangarError>
+        func publish(artifact: URL, metadata: ReleaseMetadata) async throws -> PublishResult {
+            try result.get()
+        }
+    }
+
+    private nonisolated static let dummyMetadata = ReleaseMetadata(
+        bundleID: "co.tuntun.relay", version: "1", build: "1", channel: "internal",
+        platform: .macos, releaseNotes: nil, minOS: nil, gitCommit: nil
+    )
+
     /// A model backed by isolated throwaway stores. `start()` is never called, so no
-    /// Bridge / PTY / network is created.
-    private func makeModel(archiver: ArchiveRunning = StubArchiveRunner(
-        result: .success(ArchiveOutcome(artifact: URL(fileURLWithPath: "/tmp/none.dmg"), dryRun: true))
-    )) -> AppModel {
+    /// Bridge / PTY / network is created. The metadata provider is fixed so publishing
+    /// never shells out to git.
+    private func makeModel(
+        archiver: ArchiveRunning = StubArchiveRunner(
+            result: .success(ArchiveOutcome(artifact: URL(fileURLWithPath: "/tmp/none.dmg"), dryRun: true))
+        ),
+        distributor: DistributionService? = nil
+    ) -> AppModel {
         let suite = "RelayTests.appmodel.\(UUID().uuidString)"
         let service = "RelayTests.appmodel.kc.\(UUID().uuidString)"
         let store = SettingsStore(defaults: UserDefaults(suiteName: suite)!,
                                   keychain: KeychainStore(service: service))
-        return AppModel(store: store, archiver: archiver)
+        return AppModel(
+            store: store, archiver: archiver, distributor: distributor,
+            metadataProvider: { AppModelTests.dummyMetadata }
+        )
     }
 
     @Test func freshModelIsStopped() {
@@ -135,5 +156,38 @@ struct AppModelTests {
         #expect(model.lastArtifactURL == nil)
         #expect(model.lastError != nil)
         #expect(model.isArchiving == false)
+    }
+
+    // MARK: - Build & Publish (Slice 9)
+
+    @Test func buildAndPublishSurfacesTheInstallURLOnSuccess() async {
+        let install = URL(string: "https://hangar.test/i/rel_9")!
+        let pr = PublishResult(
+            releaseID: "rel_9", installURL: install, version: "1", build: "2",
+            channel: "internal", checksumSha256: nil, sizeBytes: nil, createdAt: nil
+        )
+        let model = makeModel(distributor: StubDistributor(result: .success(pr)))
+        await model.buildAndPublish()
+        #expect(model.lastInstallURL == install)
+        #expect(model.isPublishing == false)
+        #expect(model.lastError == nil)
+    }
+
+    @Test func buildAndPublishSurfacesAFailureAndLeavesNoInstallURL() async {
+        let model = makeModel(distributor: StubDistributor(result: .failure(.invalidToken)))
+        await model.buildAndPublish()
+        #expect(model.lastInstallURL == nil)
+        #expect(model.lastError != nil)
+        #expect(model.isPublishing == false)
+    }
+
+    /// The publisher token is dev/CI-only and never shipped in the tester binary, so a
+    /// build with no distributor configured must refuse to publish (SPEC §6).
+    @Test func buildAndPublishWithoutAConfiguredPublisherReports() async {
+        let model = makeModel(distributor: nil)
+        await model.buildAndPublish()
+        #expect(model.lastInstallURL == nil)
+        #expect(model.lastError != nil)
+        #expect(model.isPublishing == false)
     }
 }

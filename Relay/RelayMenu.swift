@@ -41,6 +41,19 @@ struct RelayMenu: View {
             Text("📦 \(artifact.lastPathComponent)")
         }
 
+        Button(model.isPublishing ? "Building & Publishing…" : "Build & Publish…") {
+            Task { await model.buildAndPublish() }
+        }
+        .disabled(model.isPublishing)
+        if let install = model.lastInstallURL {
+            Text("🔗 \(install.absoluteString)")
+            Button("Copy Install Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(install.absoluteString, forType: .string)
+            }
+            Button("Send Install Link to Chat") { Task { await model.sendInstallLink() } }
+        }
+
         if let error = model.lastError {
             Divider()
             Text("⚠️ \(error)")
