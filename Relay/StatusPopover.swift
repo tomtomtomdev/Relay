@@ -167,6 +167,12 @@ struct StatusPopover: View {
                              disabled: model.isArchiving) { await model.buildAndArchive() }
                 actionButton(model.isPublishing ? "Publishing…" : "Build & Publish",
                              disabled: model.isPublishing) { await model.buildAndPublish() }
+                // The staged Archive & Distribute window (Slice 14, design frame 5).
+                Button {
+                    NSApp.activate()   // accessory/LSUIElement apps must front themselves first
+                    openWindow(id: ArchiveWindow.sceneID)
+                } label: { capsuleLabel("Distribute…") }
+                    .buttonStyle(.plain)
             }
 
             if let artifact = model.lastArtifactURL {

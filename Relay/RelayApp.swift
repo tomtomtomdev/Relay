@@ -27,6 +27,15 @@ struct RelayApp: App {
         .defaultSize(width: 720, height: 560)
         .defaultLaunchBehavior(.suppressed)
 
+        // The Archive & Distribute window (Slice 14, design frame 5). Opened on demand from
+        // the popover; suppressed at launch so the app stays menu-bar resident.
+        Window("Archive & Distribute", id: ArchiveWindow.sceneID) {
+            ArchiveWindow(model: model)
+        }
+        .defaultSize(width: 460, height: 430)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         Settings {
             SettingsView(model: model)
         }
