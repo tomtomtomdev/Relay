@@ -571,3 +571,62 @@ with no other memory.
   link, Open Relay, Settings, Quit). Core: a `RecentCommand` derivation (status icon + mono
   command + time) from the tail/log. Watch out for: `.window` style changes dismissal
   behaviour (popover stays open across actions) and the live tail/Recent must stay bounded.
+
+## Slice 12 — Status-bar popover (frame 2)   (2026-06-27)
+- Status: complete  ·  **third slice of the UI series (10–14)** — the always-resident
+  menu-bar popover, replacing the plain `.menu` dropdown.
+- What landed: switched `MenuBarExtra` from `.menuBarExtraStyle(.menu)` to `.window` and
+  replaced `RelayMenu` with a styled `StatusPopover` (design frame 2). The *pure* core
+  (`PopoverPresentation.swift`, all `nonisolated`/`Sendable`, no SwiftUI, no I/O):
+  `RecentCommands.derive(from:limit:) -> [RecentCommand]` condenses the live output tail
+  into a bounded **Recent** list — it scans for `$`-prefixed command lines, strips the
+  prompt, infers each command's `Outcome` (`.ok`/`.warn`/`.neutral`) from the lines up to
+  the *next* command by reusing the Slice-11 `SessionLogLine.classify` (a warning anywhere
+  wins; else a PASS/✓ → `.ok`), attaches a `HH:MM` time **only when** a timestamp line
+  actually precedes it (real PTY output has none → `time == nil`, never fabricated), and
+  returns the most-recent `limit` (default 6) **newest-first**. `RecentCommand.Outcome`
+  maps to a `PaletteToken` + SF Symbol for the row glyph. The popover surfaces no secret —
+  only command text the operator already typed. View (`StatusPopover.swift`, 300px wide,
+  both appearances): header (34px app mark + Listening/Paused + master bot-listener
+  `RelayToggleStyle` → `start()`/`stop()`), three status rows from `SessionStatus.derive`,
+  the **Recent** list (placeholder when empty), an actions strip preserving Lock/Unlock,
+  Send Test, Settings (`SettingsLink`), Build & Archive, Build & Publish, the artifact name,
+  the install link + Copy / Send-to-Chat, and the error line, and a footer (Open Relay /
+  Pause-Resume / Quit-in-red).
+- Key files: `Relay/PopoverPresentation.swift`, `Relay/StatusPopover.swift` (new); edits to
+  `Relay/RelayApp.swift` (`.window` style + `StatusPopover`); **deleted** `Relay/RelayMenu.swift`
+  (replaced). Tests: `RelayTests/PopoverPresentationTests.swift` (new). No `project.pbxproj`
+  edit — `PBXFileSystemSynchronizedRootGroup` auto-includes/removes files under `Relay/`/`RelayTests/`.
+- Tests: 197 Swift Testing cases passing (13 new + 184 prior) + 4 UI launch tests; 0
+  failures; build clean (no warnings, Swift 6 strict concurrency). New, all pure
+  (Foundation-only): command extraction strips `$` / ignores the bare `$` prompt + ordinary
+  output + quoted requests; outcome ok-on-PASS / warn-on-failure / warn-precedence-over-pass
+  / neutral-with-no-markers / scans-only-until-next-command; timestamp parsed when present /
+  nil when absent; newest-first + bounded by `limit`; empty tail → []; each `Outcome` → its
+  palette token; the canonical frame-1 feed → `["deploy api to staging" (warn, 14:35),
+  "npm test" (ok, 14:32)]`.
+- Decisions / deviations from PLAN: a "recent command" is defined as a `$`-prefixed prompt
+  line (matches frame 2's shell-command Recent rows: `npm test` / `deploy staging` /
+  `git status`); quoted natural-language requests are the *message*, not the command, so
+  they're excluded. The design's per-row timestamp is **adapted, not faked** (Slice-11
+  precedent): parsed from a leading `HH:MM` line when the feed carries one, otherwise
+  omitted — our `OutputTail` holds raw ANSI-stripped PTY text with no time data. Outcome is
+  inferred by reusing `SessionLogLine.classify` so Recent colouring can't drift from the
+  live terminal feed. `RecentCommands.derive` is bounded by `limit` (Recent never grows
+  without bound; `OutputTail` was already capped at 50 since Slice 7). The popover replaces
+  the raw last-5-tail readout with the Recent list (the full terminal lives in the Slice-11
+  window). Every prior `RelayMenu` action is preserved in the popover's actions/footer; the
+  design's footer "Pause" maps to `stop()` (and "Resume"→`start()`) and the header master
+  toggle is the same `start()`/`stop()` binding. Pure core kept Foundation-only/`nonisolated`;
+  the SwiftUI body is untested-by-design (repo pattern) with dark/light `#Preview`s seeded
+  via `AppModel.previewSeeded`. Did NOT touch the unrelated `design_handoff_relay/` worktree
+  deletions.
+- Commit: 8a5d36a "slice 12: status-bar popover (frame 2) — windowed MenuBarExtra".
+- Next: Slice 13 — Settings redesign (frames 3 & 4, adapted to Hangar): tabbed settings
+  (Telegram / Claude / Distribution / General), chip-style allowed-ID input, masked bot
+  token + **Reveal** (never logged), segmented permission mode over the real `PolicyPreset`
+  (`.strict`/`.standard` — do **not** invent the design's Ask/Auto/Plan modes; that needs an
+  Authorizer/`Policy` change → backlog). Distribution tab = Hangar dev/CI callout + install
+  URL (no Google Drive fields). Core: a chip model, `maskToken`, reveal state. Watch out for:
+  secrets stay in `KeychainStore` (Slice 1) and must never appear in a log / `@AppStorage` /
+  the masked field's revealed state beyond the live in-memory value.
