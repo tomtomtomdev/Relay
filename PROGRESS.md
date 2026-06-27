@@ -341,3 +341,69 @@ with no other memory.
   out, never linked — zero-dep guardrail). The in-app "Build & Archive" trigger is an
   adapter over a **stub runner** so it's unit-testable; the script itself is dry-run/lint
   in CI. No live notarization in tests. Keep distribution/publish (Hangar) for Slice 9.
+
+## Slice 8 — Archive   (2026-06-27)
+- Status: complete
+- What landed: the build→notarize pipeline as a shelled-out script plus a thin, fully
+  stub-tested Swift adapter (PLAN Slice 8, SPEC §6). `scripts/archive.sh` runs
+  `xcodebuild archive` → `xcodebuild -exportArchive` (Developer ID) → `create-dmg` →
+  `xcrun notarytool submit --wait` → `xcrun stapler staple` — every tool **shelled out,
+  never linked** (zero-dep guardrail). Notary credentials come only from a `notarytool`
+  **keychain-profile name** (created out of band); the script never receives/prints a
+  password or token. Contract with the app: the *only* stdout line on success is
+  `RELAY_ARTIFACT=<abs path>.dmg` (all logs to stderr). `--dry-run` plans every stage and
+  prints that line **without invoking any tool or doing side effects** (no mkdir/rm in
+  dry-run), so it's safe + offline for CI. App side: `CommandRunner` protocol +
+  `CommandResult` (the test seam), `ProcessCommandRunner` (real `Foundation.Process`,
+  drains stdout/stderr concurrently via per-fd threads to avoid pipe-buffer deadlock —
+  never exercised in tests), and `Archiver: ArchiveRunning` which checks the script exists,
+  runs `/bin/bash <script> [--dry-run]`, maps exit≠0 → `ArchiveError.scriptFailed`
+  (stderr, capped to 500 chars), parses `RELAY_ARTIFACT=` → `ArchiveOutcome(artifact,
+  dryRun)`, else `.noArtifactProduced`. Wired into `AppModel` (`buildAndArchive(dryRun:)`,
+  `isArchiving`/`lastArtifactURL`, two new `AppEvent`s) and a thin `RelayMenu` "Build &
+  Archive…" item that surfaces the artifact name / a generic "Archive failed." message
+  (never tool output verbatim).
+- Key files: `Relay/Archiver.swift` (new), `scripts/archive.sh` (new, exec bit 100755);
+  edits to `Relay/AppModel.swift` (archive wire) + `Relay/RelayMenu.swift` (menu item);
+  `RelayTests/ArchiverTests.swift` + `RelayTests/ArchiveScriptTests.swift` (new), edits to
+  `RelayTests/AppModelTests.swift`. No `project.pbxproj` edit — `PBXFileSystemSynchronized
+  RootGroup` auto-includes new files under `Relay/`/`RelayTests/`; `scripts/` is not a
+  build input (the script is data the adapter shells out to).
+- Tests: 133 Swift Testing cases passing (0 failures) + 4 UI launch tests. New: Archiver
+  over a `StubCommandRunner` — parses the artifact line, shells out as `/bin/bash <script>`,
+  passes `--dry-run` (reflected in the outcome), exit≠0 → `.scriptFailed` carrying stderr,
+  missing artifact line → `.noArtifactProduced`, missing script → throws *before* running,
+  passes no secrets/extra args (`[script, --dry-run]` exactly). ArchiveScript runs the real
+  committed script: exists, `bash -n` lints clean, `--dry-run` exits 0 + emits one
+  `RELAY_ARTIFACT=…dmg` stdout line + plans all five stages (archive/export/create-dmg/
+  notarytool/stapler) to stderr, and the source never inlines `--password`/`--apple-id`
+  (only `--keychain-profile`). AppModel: `buildAndArchive` surfaces the artifact on success
+  and a bounded error (no artifact) on failure, clearing `isArchiving` both ways.
+- Decisions / deviations from PLAN: split the work cleanly — the real pipeline is the
+  *script* (so the app links nothing new), and the Swift `Archiver` is a pure adapter over
+  an injectable `CommandRunner`, so 100% of the app-side logic is stub-tested with zero
+  live tooling (the "stub runner" mandate). The "script dry-run/lint in CI" deliverable is
+  exercised *inside the xcodebuild suite* by `ArchiveScriptTests`, which locates the
+  committed `scripts/archive.sh` via `#filePath` and runs `bash -n` + `--dry-run` through
+  `Process` — works because the sandbox is **not enforced** in the `xcodebuild test` dev
+  context (same reason Slice 4's PTY spawns succeed); if a future CI runs sandboxed those
+  three script tests would need a bundled-resource copy instead. Made all new
+  non-UI types `nonisolated` (the app target is main-actor-by-default, the *test* target is
+  not — that asymmetry is why `AppModelTests` is `@MainActor` but `ArchiverTests` isn't;
+  `nonisolated` lets the Sendable adapter construct from the nonisolated suite, matching the
+  repo's "transforms are Sendable/@MainActor-free" guardrail). Errors surfaced to the UI are
+  generic ("Archive failed.") — the script never prints secrets, but the adapter still caps
+  stderr and the model never echoes tool output, so no secret can leak via an error path.
+  `Archiver.defaultScriptURL` prefers a bundled `archive.sh` resource, else resolves
+  `scripts/archive.sh` via `#filePath` (fine for a dev/CI build — archiving is dev-only by
+  SPEC §6). Did NOT touch the unrelated `design_handoff_relay/` deletions in the worktree.
+- Commit: dfc6bbe "slice 8: archive pipeline (script) + in-app adapter over a stub runner".
+- Next: Slice 9 — Publish to Hangar. Watch out for: implement `HangarClient:
+  DistributionService` (SPEC §6) against Hangar's contract field-for-field — direct
+  multipart `< threshold`, presigned `PUT` + finalize `≥ threshold`; `ReleaseMetadata`/
+  `PublishResult` JSON keys match exactly (`bundleId`, `releaseId`, `checksumSha256`, …).
+  Token is **Keychain-only**, sent as `Bearer` at call time, never logged, never shipped in
+  the tester binary. Test with a `URLProtocol` stub of Hangar only (never live-upload):
+  multipart two-part body, presigned create→PUT(replay uploadHeaders)→finalize, and the
+  401/403/409/413/415/422 → `HangarError` mapping. Reuse this slice's `Archiver` to produce
+  the artifact, then publish; surface the returned `installURL`.
