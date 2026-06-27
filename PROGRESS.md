@@ -699,3 +699,68 @@ with no other memory.
   primary button ("Archive & Upload" / "Archiving…" / "Open Install Link"). View = a sheet/
   window with step rows + share-link field + Copy. Watch out: fine-grained per-step % needs new
   backend signals → backlog; start with **coarse** states from the current flags only.
+
+## Slice 14 — Archive & Distribute window (frame 5)   (2026-06-27)
+- Status: complete  ·  **final slice of the UI series (10–14)** — the staged build→distribute
+  window. With this the design (`design_handoff_relay`, frames 1–5) is fully implemented over
+  the finished backend (Slices 0–9).
+- What landed: the *pure* presentation core + a thin SwiftUI window. Core
+  (`ArchivePresentation.swift`, all `nonisolated`/`Sendable`, no SwiftUI, no I/O):
+  `ArchiveJobViewState.derive(isArchiving:isPublishing:lastArtifactURL:lastInstallURL:lastError:)`
+  maps the existing `AppModel` flags onto a **coarse** four-step list (`Step` = `build` /
+  `archive` / `upload` / `share`, each `pending`/`active`/`done`) plus a stateful primary button
+  (`PrimaryAction` `.archiveAndUpload` / `.busy` / `.openInstallLink`), the minted `shareURL`,
+  and a pass-through `errorMessage`. The phase is computed from the flags with **in-flight flags
+  taking priority** over completed results (a re-run shows progress and hides the previous run's
+  stale install link): `isPublishing` → uploading (build/archive `done`, upload `active` — matches
+  the design frame), `isArchiving` → archiving (build+archive `active`), else `lastInstallURL` →
+  published (all `done`, `shareURL` surfaced), else `lastArtifactURL` → archived, else idle.
+  `Step.Status.token` maps `done`→`.success` / `active`→`.accent` / `pending`→`.textTertiary`
+  (design's green ✓ / amber / gray circles). Surfaces **no secret** — only the build flags, the
+  artifact filename (view), and the Hangar install URL. View (`ArchiveWindow.swift`, 460×430,
+  both appearances): app-mark header (`Relay.app · v<ver>` from Info.plist + artifact filename
+  subtitle), the four `StepCircle` rows, the install-link field (link icon + URL/"pending" +
+  Copy / Send-to-Chat reusing `sendInstallLink()`), an amber stateful primary button
+  (`buildAndPublish` / open-URL / disabled-when-busy) + a `Done` (dismiss) button, and a bounded
+  error line. Opened on demand via a new "Distribute…" button in the popover's actions strip.
+- Key files: `Relay/ArchivePresentation.swift`, `Relay/ArchiveWindow.swift` (new); edits to
+  `Relay/RelayApp.swift` (added `Window("Archive & Distribute", id: ArchiveWindow.sceneID)`,
+  `.windowResizability(.contentSize)` + suppressed launch) and `Relay/StatusPopover.swift`
+  (the "Distribute…" opener). Tests: `RelayTests/ArchivePresentationTests.swift` (new). No
+  `project.pbxproj` edit — `PBXFileSystemSynchronizedRootGroup` auto-includes new files.
+- Tests: 228 Swift Testing cases passing (9 new + 219 prior) + 4 UI launch tests + the Slice-8
+  script tests; 0 failures; build clean (no warnings, Swift 6 strict concurrency). New, all pure
+  (Foundation-only): steps are the four stages in order with stable ids + non-empty titles; idle
+  → all pending + "Archive & Upload"; archiving → build/archive active + "Archiving…" + `.busy`;
+  publishing → build/archive done, upload active + "Uploading…" + no link; archived → build/
+  archive done, re-runnable; published → all done + "Open Install Link" + `shareURL`; in-flight
+  flags hide a stale link on re-run; error surfaced with **no** active spinner + retryable;
+  each `Status` → its palette token.
+- Decisions / deviations from PLAN: **coarse states only** (as the plan mandates) — the backend
+  exposes two in-flight flags + two results, not per-substep progress, so a publish in flight
+  optimistically shows build/archive `done` + upload `active` even though the archive sub-phase
+  runs first (the archive→upload handoff isn't observable); fine-grained per-step % is **backlog**
+  (no backend pipeline change in a UI slice). The PLAN's tuple return is realised as an
+  `Equatable`/`Sendable` `ArchiveJobViewState` struct (repo precedent: Slice 3's `AuthorizerOutcome`
+  over a bare `Decision`) — cleaner to test and to thin the view against. Distribution is **Hangar**,
+  not the design's Google Drive (confirmed UI-series decision): the upload step reads "Upload to
+  Hangar", the link is the Hangar `installURL`. Rendered as a dedicated **`Window` scene** (not a
+  SwiftUI `.sheet`) — the design frame is a standalone window with its own chrome, and a menu-bar
+  app has no stable sheet anchor (the popover dismisses); matches the Slice-11 `SessionWindow`
+  pattern (native chrome + suppressed launch + `openWindow`). The design's "Cancel" → **"Done"**
+  (dismiss): the backend can't cancel an in-flight `Process`, so a cancel button would be
+  dishonest; closing the window leaves the run to finish and update the flags. Per-step time/%
+  trailing labels from the design are adapted away (no backend signal). The header size ("18.6
+  MB") is not fabricated — we show the artifact filename when known, else a platform/signing line.
+  On a tester build with no publisher configured, the primary button runs and the core surfaces
+  "Publishing isn't configured on this build." via the error line (SPEC §6 — no publisher token
+  shipped). Pure core kept Foundation-only/`nonisolated`; the SwiftUI body is untested-by-design
+  (repo pattern) with dark/light `#Preview`s seeded via `AppModel.previewSeeded`. Did NOT touch the
+  unrelated `design_handoff_relay/` worktree deletions.
+- Commit: c42c9a1 "slice 14: archive & distribute window (frame 5) …".
+- Next: **UI series complete** — Slices 10–14 all landed; the full backend (0–9) + the
+  high-fidelity design (frames 1–5) are now implemented. No Slice 15. Remaining items are PLAN's
+  "Backlog / later" (named PTY sessions, inline keyboard buttons, file send, notification mirror)
+  plus UI-series follow-ups noted along the way: fine-grained archive/publish per-step progress %
+  (needs new backend signals), the design's Ask/Auto/Plan permission modes (needs an Authorizer/
+  `Policy` change), and a proper `.icns` app icon.
