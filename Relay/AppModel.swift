@@ -23,6 +23,8 @@ nonisolated enum AppEvent: Sendable {
     case output(String)
     case failed(String)
     case clearError
+    case archiveStarted
+    case archiveFinished(URL)
 }
 
 @Observable
@@ -37,12 +39,22 @@ final class AppModel {
     private(set) var tail: OutputTail
     var lastError: String?
 
+    /// Build & Archive (Slice 8): in-flight flag and the last produced artifact.
+    private(set) var isArchiving = false
+    private(set) var lastArtifactURL: URL?
+
     @ObservationIgnored private let store: SettingsStore
+    @ObservationIgnored private let archiver: ArchiveRunning
     @ObservationIgnored private var bridge: Bridge?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
 
-    init(store: SettingsStore, tailCapacity: Int = 50) {
+    init(
+        store: SettingsStore,
+        tailCapacity: Int = 50,
+        archiver: ArchiveRunning = Archiver(scriptURL: Archiver.defaultScriptURL)
+    ) {
         self.store = store
+        self.archiver = archiver
         self.settings = store.load()
         self.tail = OutputTail(capacity: tailCapacity)
     }
@@ -70,8 +82,14 @@ final class AppModel {
             tail.append(text)
         case .failed(let message):
             lastError = message
+            isArchiving = false
         case .clearError:
             lastError = nil
+        case .archiveStarted:
+            isArchiving = true
+        case .archiveFinished(let artifact):
+            isArchiving = false
+            lastArtifactURL = artifact
         }
     }
 
@@ -141,6 +159,22 @@ final class AppModel {
         }
         let client = TelegramClient(token: settings.token, session: Self.makeURLSession())
         try? await client.sendMessage(chatID: chatID, text: MarkdownV2.escape(text))
+    }
+
+    // MARK: - Build & Archive (Slice 8)
+
+    /// Run the archive pipeline (`scripts/archive.sh`) and surface the result. A dev/CI
+    /// action by design (SPEC §6); `dryRun` plans the pipeline without invoking any tool.
+    func buildAndArchive(dryRun: Bool = false) async {
+        guard !isArchiving else { return }
+        apply(.clearError)
+        apply(.archiveStarted)
+        do {
+            let outcome = try await archiver.archive(dryRun: dryRun)
+            apply(.archiveFinished(outcome.artifact))
+        } catch {
+            apply(.failed("Archive failed."))   // never includes tool output verbatim
+        }
     }
 
     // MARK: - Internals

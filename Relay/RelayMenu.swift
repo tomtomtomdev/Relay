@@ -32,6 +32,15 @@ struct RelayMenu: View {
 
         Button("Send Test Message") { Task { await model.sendTestMessage() } }
 
+        Divider()
+        Button(model.isArchiving ? "Building & Archiving…" : "Build & Archive…") {
+            Task { await model.buildAndArchive() }
+        }
+        .disabled(model.isArchiving)
+        if let artifact = model.lastArtifactURL {
+            Text("📦 \(artifact.lastPathComponent)")
+        }
+
         if let error = model.lastError {
             Divider()
             Text("⚠️ \(error)")

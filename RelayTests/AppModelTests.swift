@@ -15,14 +15,23 @@ import Foundation
 @MainActor
 struct AppModelTests {
 
+    /// Replays a canned archive result so the in-app "Build & Archive" wire-through is
+    /// testable with no real script run (no xcodebuild / notarytool).
+    private struct StubArchiveRunner: ArchiveRunning {
+        let result: Result<ArchiveOutcome, ArchiveError>
+        func archive(dryRun: Bool) async throws -> ArchiveOutcome { try result.get() }
+    }
+
     /// A model backed by isolated throwaway stores. `start()` is never called, so no
     /// Bridge / PTY / network is created.
-    private func makeModel() -> AppModel {
+    private func makeModel(archiver: ArchiveRunning = StubArchiveRunner(
+        result: .success(ArchiveOutcome(artifact: URL(fileURLWithPath: "/tmp/none.dmg"), dryRun: true))
+    )) -> AppModel {
         let suite = "RelayTests.appmodel.\(UUID().uuidString)"
         let service = "RelayTests.appmodel.kc.\(UUID().uuidString)"
         let store = SettingsStore(defaults: UserDefaults(suiteName: suite)!,
                                   keychain: KeychainStore(service: service))
-        return AppModel(store: store)
+        return AppModel(store: store, archiver: archiver)
     }
 
     @Test func freshModelIsStopped() {
@@ -103,5 +112,28 @@ struct AppModelTests {
         model.apply(.output("line-1"))
         model.apply(.output("line-2"))
         #expect(model.tail.lines == ["line-1", "line-2"])
+    }
+
+    // MARK: - Build & Archive (Slice 8)
+
+    @Test func buildAndArchiveSurfacesTheArtifactOnSuccess() async {
+        let artifact = URL(fileURLWithPath: "/tmp/Relay.dmg")
+        let model = makeModel(archiver: StubArchiveRunner(
+            result: .success(ArchiveOutcome(artifact: artifact, dryRun: false))
+        ))
+        await model.buildAndArchive()
+        #expect(model.lastArtifactURL == artifact)
+        #expect(model.isArchiving == false)
+        #expect(model.lastError == nil)
+    }
+
+    @Test func buildAndArchiveSurfacesAFailureAndLeavesNoArtifact() async {
+        let model = makeModel(archiver: StubArchiveRunner(
+            result: .failure(.scriptFailed(exitCode: 65, message: "boom"))
+        ))
+        await model.buildAndArchive()
+        #expect(model.lastArtifactURL == nil)
+        #expect(model.lastError != nil)
+        #expect(model.isArchiving == false)
     }
 }
