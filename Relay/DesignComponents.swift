@@ -21,13 +21,18 @@ extension Appearance {
 extension Color {
     /// Resolve a semantic design token to a SwiftUI `Color` for the given scheme.
     init(_ token: PaletteToken, _ scheme: ColorScheme) {
-        let c = RelayPalette.resolve(token, Appearance(scheme))
+        self.init(RelayPalette.resolve(token, Appearance(scheme)))
+    }
+
+    /// Build a SwiftUI `Color` from a parsed `RGBA` — for one-off design values that sit
+    /// outside the semantic palette (e.g. the app-mark's steel gradient stops).
+    init(_ rgba: RGBA) {
         self.init(
             .sRGB,
-            red: Double(c.r) / 255,
-            green: Double(c.g) / 255,
-            blue: Double(c.b) / 255,
-            opacity: Double(c.a) / 255
+            red: Double(rgba.r) / 255,
+            green: Double(rgba.g) / 255,
+            blue: Double(rgba.b) / 255,
+            opacity: Double(rgba.a) / 255
         )
     }
 }

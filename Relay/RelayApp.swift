@@ -19,6 +19,14 @@ struct RelayApp: App {
         }
         .menuBarExtraStyle(.menu)
 
+        // The main window (Slice 11, design frame 1). Suppressed at launch so the app stays
+        // menu-bar resident; opened on demand via the menu's "Open Relay".
+        Window("Relay — Session", id: SessionWindow.sceneID) {
+            SessionWindow(model: model)
+        }
+        .defaultSize(width: 720, height: 560)
+        .defaultLaunchBehavior(.suppressed)
+
         Settings {
             SettingsView(model: model)
         }

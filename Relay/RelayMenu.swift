@@ -11,9 +11,18 @@ import SwiftUI
 
 struct RelayMenu: View {
     var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Text("Relay — \(model.status.label)")
+        Divider()
+
+        Button("Open Relay") {
+            // Accessory/`LSUIElement` apps must explicitly front themselves before the
+            // window will come forward (macOS 14+ `activate()`; non-deprecated at our target).
+            NSApp.activate()
+            openWindow(id: SessionWindow.sceneID)
+        }
         Divider()
 
         if model.status == .stopped {
