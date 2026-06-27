@@ -287,3 +287,57 @@ with no other memory.
   bridge's `SessionState`/`AppStatus`; "Send test message" + a live tail of the last N
   output chunks. Keep the SwiftUI body thin and unit-test the view-model logic (status
   transitions, validation) — the `Bridge` already owns the live state to surface.
+
+## Slice 7 — Menu-bar UI + settings   (2026-06-27)
+- Status: complete
+- What landed: an `@Observable` `AppModel` (the view-model) whose every state change
+  funnels through one `apply(_ AppEvent)` reducer, so the status machine and validation
+  are unit-testable with **no live Bridge/PTY/network**. `status` is a pure
+  `AppStatus.derive(isRunning:isUnlocked:hasError:)` over the model's flags; `canStart`
+  mirrors `BotConfig.validationIssues()`. `start()` builds the Bridge from the current
+  settings (`zsh -l` + the target command as the Slice-4 bootstrap), wires its event
+  stream into the reducer, and flips `runningChanged`; `stop()` tears it down and
+  relocks. `SettingsStore` splits persistence: non-secret `BotConfig` → UserDefaults as
+  JSON (secrets are absent from `Codable` by construction since Slice 1), token + pairing
+  secret → Keychain only. `Bridge` gained a UI surface: a `let events: AsyncStream<
+  BridgeEvent>` (`.unlockedChanged` / `.output`), host `lock()`/`unlock()`/
+  `sendTestMessage()`, and `SessionState.isUnlocked`. SwiftUI stays thin — a `Settings`
+  Form (token, pairing `SecureField`, allowed IDs, target command, idle timeout, policy
+  picker, inline validation, Save), an enriched `RelayMenu` (Start/Stop, Lock/Unlock,
+  Send Test Message, live tail of the last 5 chunks, Settings…, Quit), and the glyph
+  bound to `model.status`.
+- Key files: `Relay/AppModel.swift`, `Relay/ConfigSupport.swift` (ConfigIssue/
+  validationIssues/isStartable/AllowedIDs/OutputTail/BotConfig.default), `Relay/
+  SettingsStore.swift`, `Relay/SettingsView.swift` (all new); edits to `Relay/
+  AppStatus.swift` (`derive`), `Relay/Authorizer.swift` (`SessionState.isUnlocked`),
+  `Relay/Bridge.swift` (events + host controls), `Relay/RelayMenu.swift`, `Relay/
+  RelayApp.swift` (AppModel + `Settings` scene). Tests: `RelayTests/SettingsLogicTests`,
+  `SettingsStoreTests`, `AppModelTests` (new). No `project.pbxproj` edit.
+- Tests: 116 Swift Testing unit cases passing (31 new + 85 prior) + 4 UI launch tests;
+  0 failures. New: `AppStatus.derive` across all four states (error dominates); config
+  validation per-field + whitespace token; `AllowedIDs` parse/format/round-trip; tail
+  ring-buffer caps keeping the most recent; `SettingsStore` round-trips every field
+  (secrets restored from Keychain via `==`) **and never writes a secret to UserDefaults**;
+  `AppModel` loads settings on init, `canStart` mirrors validation, the reducer drives
+  the glyph stopped→polling→unlocked→polling→stopped, stopping relocks, failure → error +
+  message, clearError returns to the derived status, output events append to the tail.
+- Decisions / deviations from PLAN: introduced `AppModel` + pure helpers and kept the
+  SwiftUI body thin (the "view-model logic unit-tested" bar is met by the reducer + pure
+  helpers, not by exercising SwiftUI). `SettingsStore` is `@MainActor` (not `Sendable`):
+  it wraps `UserDefaults`, which isn't `Sendable` in Swift 6, and settings I/O is small +
+  UI-adjacent, so it lives on the main actor with `AppModel` — both backing stores stay
+  injectable (the Slice-1 test seam). Host-side `Lock`/`Unlock` are allowed because
+  physical access to the Mac already implies trust (the threat model is about a leaked
+  *token* driving a *remote* chat); `unlock()` is the host counterpart to Telegram
+  `/unlock <secret>`. `SessionState.isUnlocked` ignores the idle deadline (the Authorizer
+  enforces relock per-message); it only drives the cosmetic glyph. The live tail shows
+  the ANSI-stripped, capped flush text (emitted from `enqueueRendered` before `<pre>`
+  wrapping); menu lines are collapsed to one ≤60-char line. `start()` runs the target via
+  `zsh -l` + bootstrap rather than parsing argv. Bridge event emission is additive and
+  doesn't change Slice 6's asserted behaviour (events buffer unconsumed there).
+- Commit: a4d25f4 "slice 7: menu-bar UI + settings …".
+- Next: Slice 8 — Archive. Watch out for: `scripts/archive.sh` does `xcodebuild archive`
+  → Developer ID export → `create-dmg` → `notarytool submit --wait` → staple (shelled
+  out, never linked — zero-dep guardrail). The in-app "Build & Archive" trigger is an
+  adapter over a **stub runner** so it's unit-testable; the script itself is dry-run/lint
+  in CI. No live notarization in tests. Keep distribution/publish (Hangar) for Slice 9.
