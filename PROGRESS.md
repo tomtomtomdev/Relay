@@ -467,7 +467,7 @@ with no other memory.
   a warning = failure). All new non-UI types are `nonisolated`/`Sendable` (app target is
   main-actor-by-default; matches the repo's transforms-are-Sendable guardrail). Did NOT
   touch the unrelated `design_handoff_relay/` deletions in the worktree.
-- Commit: aa49482 "slice 9: HangarClient distribution + Build & Publish wire-through".
+- Commit: dfd6618 "slice 9: HangarClient distribution + Build & Publish wire-through".
 - Next: **PLAN complete** — Slices 0–9 all landed. No Slice 10. Remaining items live in
   PLAN's "Backlog / later" (named PTY sessions, inline keyboard buttons, file send,
   notification mirror) and are out of the original scope. To actually publish from a dev
