@@ -2,22 +2,59 @@
 //  RelayMenu.swift
 //  Relay
 //
-//  Created by tommy yohanes on 26/06/26.
+//  Slice 7 — the menu-bar dropdown: status readout, Start/Stop, Lock/Unlock, a test
+//  message, the live output tail, and Settings/Quit. Thin by design — every action just
+//  calls an `AppModel` method; all the logic lives in the (unit-tested) view-model.
 //
 
 import SwiftUI
 
-/// Contents of the menu-bar dropdown. Slice 0 is intentionally minimal: a status
-/// readout and a Quit item. Settings / live tail land in Slice 7.
 struct RelayMenu: View {
-    let status: AppStatus
+    var model: AppModel
 
     var body: some View {
-        Text("Relay — \(status.label)")
+        Text("Relay — \(model.status.label)")
         Divider()
-        Button("Quit Relay") {
-            NSApplication.shared.terminate(nil)
+
+        if model.status == .stopped {
+            Button("Start") { Task { await model.start() } }
+                .disabled(!model.canStart)
+        } else {
+            Button("Stop") { Task { await model.stop() } }
         }
-        .keyboardShortcut("q")
+
+        if model.isUnlocked {
+            Button("Lock") { Task { await model.lock() } }
+        } else {
+            Button("Unlock") { Task { await model.unlock() } }
+                .disabled(model.status == .stopped)
+        }
+
+        Button("Send Test Message") { Task { await model.sendTestMessage() } }
+
+        if let error = model.lastError {
+            Divider()
+            Text("⚠️ \(error)")
+        }
+
+        if !model.tail.lines.isEmpty {
+            Divider()
+            ForEach(Array(model.tail.lines.suffix(5).enumerated()), id: \.offset) { _, line in
+                Text(Self.menuLine(line))
+            }
+        }
+
+        Divider()
+        SettingsLink { Text("Settings…") }
+        Button("Quit Relay") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
+    }
+
+    /// Collapse a (possibly multi-line) output chunk to a single short menu label.
+    private static func menuLine(_ raw: String) -> String {
+        let collapsed = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.count > 60 ? String(collapsed.prefix(60)) + "…" : collapsed
     }
 }

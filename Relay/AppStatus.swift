@@ -38,3 +38,14 @@ nonisolated enum AppStatus: Sendable, CaseIterable {
         }
     }
 }
+
+nonisolated extension AppStatus {
+    /// Derive the glyph state from the bridge's live flags (Slice 7). An error always
+    /// wins; otherwise a stopped bridge is `.stopped`, and a running one is `.unlocked`
+    /// or `.polling` depending on the session lock.
+    static func derive(isRunning: Bool, isUnlocked: Bool, hasError: Bool) -> AppStatus {
+        if hasError { return .error }
+        guard isRunning else { return .stopped }
+        return isUnlocked ? .unlocked : .polling
+    }
+}

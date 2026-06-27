@@ -51,6 +51,13 @@ nonisolated struct SessionState: Equatable, Sendable {
 
     /// Locked, nothing pending — the state on launch and after relock.
     static let initial = SessionState(lock: .locked, pendingConfirm: nil, droppedCount: 0)
+
+    /// Whether the lock is in its unlocked case. Ignores the idle deadline (the
+    /// Authorizer enforces that per-message); this drives only the menu-bar glyph.
+    var isUnlocked: Bool {
+        if case .unlocked = lock { return true }
+        return false
+    }
 }
 
 /// The result of one authorization: the `Decision` to act on plus the `SessionState`

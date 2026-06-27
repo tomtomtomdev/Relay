@@ -27,6 +27,15 @@
 import Foundation
 
 /// Composes the Telegram ⇄ PTY bridge and owns the running session state. An `actor`
+/// Live signals the bridge surfaces for the UI (Slice 7). The view-model maps these onto
+/// its own state; the bridge stays the single source of truth for the session.
+nonisolated enum BridgeEvent: Sendable {
+    /// The session lock changed (Telegram `/unlock`, idle relock, or a host Lock/Unlock).
+    case unlockedChanged(Bool)
+    /// A coalesced, ANSI-stripped output flush — feeds the menu's live tail.
+    case output(String)
+}
+
 /// because it coordinates concurrent ingest/output tasks over mutable session state.
 actor Bridge {
 
@@ -61,6 +70,12 @@ actor Bridge {
     private var drainTask: Task<Void, Never>?
     private var started = false
 
+    /// UI-facing event stream (lock changes + output for the live tail).
+    let events: AsyncStream<BridgeEvent>
+    private let eventsContinuation: AsyncStream<BridgeEvent>.Continuation
+    /// Last unlocked value emitted, so `unlockedChanged` fires only on real transitions.
+    private var lastEmittedUnlocked = false
+
     init(
         config: BotConfig,
         policy: Policy,
@@ -85,6 +100,10 @@ actor Bridge {
         self.drainTick = drainTick
         self.debounce = DebounceBuffer(idleInterval: idleFlush, fillThreshold: fillThreshold)
         self.bucket = TokenBucket(now: Date())
+
+        let (eventStream, eventContinuation) = AsyncStream<BridgeEvent>.makeStream(bufferingPolicy: .unbounded)
+        self.events = eventStream
+        self.eventsContinuation = eventContinuation
     }
 
     /// Identity-gate drops so far — a metric for tests/UI; never surfaced to any chat.
@@ -126,6 +145,38 @@ actor Bridge {
         ingestTask = nil
         drainTask = nil
         outputTask = nil
+
+        eventsContinuation.finish()
+    }
+
+    // MARK: - Host controls (Slice 7 — the operator at the Mac)
+
+    /// Relock immediately from the menu bar — always safe (a panic button).
+    func lock() {
+        state.lock = .locked
+        state.pendingConfirm = nil
+        emitUnlockedIfChanged()
+    }
+
+    /// Unlock from the menu bar. The person at the host is already trusted (physical
+    /// access), so this is the host-side counterpart to a Telegram `/unlock <secret>`.
+    func unlock() {
+        state.lock = .unlocked(until: Date().addingTimeInterval(config.idleTimeout))
+        emitUnlockedIfChanged()
+    }
+
+    /// Send an operator-initiated test message to the active (or first allow-listed) chat.
+    func sendTestMessage(_ text: String) async {
+        guard let chatID = outputChatID ?? config.allowedIDs.first else { return }
+        try? await telegram.sendMessage(chatID: chatID, text: MarkdownV2.escape(text))
+    }
+
+    /// Emit `unlockedChanged` only when the unlocked state actually flips.
+    private func emitUnlockedIfChanged() {
+        let unlocked = state.isUnlocked
+        guard unlocked != lastEmittedUnlocked else { return }
+        lastEmittedUnlocked = unlocked
+        eventsContinuation.yield(.unlockedChanged(unlocked))
     }
 
     // MARK: - Ingest: updates → gates → action
@@ -155,6 +206,7 @@ actor Bridge {
             update, state: state, config: config, policy: policy, now: Date()
         )
         state = outcome.state
+        emitUnlockedIfChanged()
         let chatID = update.message?.chat.id
 
         switch outcome.decision {
@@ -216,6 +268,7 @@ actor Bridge {
         let clean = ANSIStripper.strip(raw)
         if clean.isEmpty { return }
         let capped = OutputCap.capTail(clean, maxChars: hardCapChars)
+        eventsContinuation.yield(.output(capped))   // feed the menu's live tail
         let messages = OutputChunker.chunk(capped, maxChars: maxChunkChars).map(MarkdownV2.preBlock)
         pendingOutput.append(contentsOf: messages)
     }
