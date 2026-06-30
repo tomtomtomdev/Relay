@@ -149,13 +149,25 @@ fi
 
 # --- 3. Package the DMG ------------------------------------------------------------------
 # Both methods ship a `.dmg`. A `development` dmg just carries a locally-signed app.
+# Prefer `create-dmg` (nicer layout: an Applications drop-link), but fall back to the
+# always-present `hdiutil` so a clean macOS box without Homebrew still packages a dmg.
 log "[dmg] packaging -> $DMG_PATH"
-run create-dmg \
-  --volname "$SCHEME" \
-  --app-drop-link 320 150 \
-  --icon "$SCHEME.app" 160 150 \
-  "$DMG_PATH" \
-  "$APP_PATH"
+if command -v create-dmg >/dev/null 2>&1; then
+  run create-dmg \
+    --volname "$SCHEME" \
+    --app-drop-link 320 150 \
+    --icon "$SCHEME.app" 160 150 \
+    "$DMG_PATH" \
+    "$APP_PATH"
+else
+  log "[dmg] create-dmg not found — falling back to hdiutil"
+  run hdiutil create \
+    -volname "$SCHEME" \
+    -srcfolder "$APP_PATH" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH"
+fi
 
 # A development build stops here: notarization needs Developer ID notary credentials a dev
 # machine need not have, so the dmg is packaged but left un-notarized.
