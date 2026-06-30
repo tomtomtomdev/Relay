@@ -65,6 +65,31 @@ import Foundation
         }
     }
 
+    @Test func developmentMethodPackagesADmgWithoutNotarization() throws {
+        let (status, stdout, stderr) = try run("/bin/bash", [scriptURL.path, "--dry-run", "--method", "development"])
+        #expect(status == 0, "dev dry run failed: \(stderr)")
+
+        let plan = stderr.lowercased()
+        // Local dev signing still builds, exports, and packages a distributable .dmg…
+        for stage in ["archive", "export", "create-dmg"] {
+            #expect(plan.contains(stage), "dev dry-run is missing the \(stage) stage")
+        }
+        // …but skips notarization, which needs a Developer ID cert / notary credentials.
+        for stage in ["notarytool", "stapler"] {
+            #expect(!plan.contains(stage), "a development build must not run \(stage)")
+        }
+
+        // It announces a packaged `.dmg`, just an un-notarized one.
+        let artifactLine = stdout.split(separator: "\n").first { $0.hasPrefix("RELAY_ARTIFACT=") }
+        let line = try #require(artifactLine.map(String.init), "no RELAY_ARTIFACT= line on stdout")
+        #expect(line.hasSuffix(".dmg"))
+    }
+
+    @Test func rejectsAnUnknownExportMethod() throws {
+        let (status, _, _) = try run("/bin/bash", [scriptURL.path, "--dry-run", "--method", "bogus"])
+        #expect(status != 0, "an unknown --method must be rejected")
+    }
+
     @Test func neverInlinesANotarySecret() throws {
         let source = try String(contentsOf: scriptURL, encoding: .utf8)
         // Credentials must come from a notarytool keychain profile (a name, not a secret).
